@@ -1,0 +1,12 @@
+<?xml version="1.0"?>
+<ruleset name="ImageConverter">
+    <description>Nextcloud coding standard for the imageconverter app.</description>
+
+    <rule ref="vendor/nextcloud/coding-standard/NextcloudStandard/ruleset.xml"/>
+
+    <arg name="extensions" value="php"/>
+    <arg name="colors"/>
+
+    <file>lib</file>
+    <file>tests/Unit</file>
+</ruleset>
