@@ -1,67 +1,125 @@
 <?php
 
+declare(strict_types=1);
+
 namespace OCA\ImageConverter\Controller;
 
-use OCP\IRequest;
+use InvalidArgumentException;
+use OCA\ImageConverter\Exception\UnsupportedFormatException;
+use OCA\ImageConverter\Service\ConversionPlan;
+use OCA\ImageConverter\Service\ImageConverter;
+use OCA\ImageConverter\Service\SizeTargeter;
+use OCA\ImageConverter\Storage\ConvertStorage;
 use OCP\AppFramework\Controller;
 use OCP\AppFramework\Http;
-use OCP\AppFramework\Http\JSONResponse;
-use Psr\Log\LoggerInterface;
 use OCP\AppFramework\Http\Attribute\NoAdminRequired;
+use OCP\AppFramework\Http\JSONResponse;
+use OCP\IRequest;
+use Psr\Log\LoggerInterface;
+use Throwable;
 
-class ConvertController extends Controller
-{
-	private $storage;
-	private $logger;
+final class ConvertController extends Controller {
+	private const DEFAULT_TARGET_BYTES = 1_048_576;
 
-	public function __construct(LoggerInterface $logger, $AppName, IRequest $request, \OCA\ImageConverter\Storage\ConvertStorage $ConvertStorage)
-	{
-		parent::__construct($AppName, $request);
-		$this->storage = $ConvertStorage;
-		$this->logger = $logger;
+	public function __construct(
+		string $appName,
+		IRequest $request,
+		private readonly ConvertStorage $storage,
+		private readonly SizeTargeter $sizeTargeter,
+		private readonly ImageConverter $imageConverter,
+		private readonly LoggerInterface $logger,
+	) {
+		parent::__construct($appName, $request);
 	}
 
-	/**
-	 * Endpoint to convert the HEIC/HEIF images
-	 *
-	 * @param string $filename
-	 * @param int $id
-	 * @param integer $compressionQuality
-	 * @return void
-	 */
 	#[NoAdminRequired]
-	public function convertImage($filename, $id, $compressionQuality = 100)
-	{
-
-		// Check if file is .heic or .heif and rename correctly 
-		if (stripos($filename, ".heic") === false) {
-			$newFilename = str_ireplace(".heif", ".jpg", $filename);
-		} else {
-			$newFilename = str_ireplace(".heic", ".jpg", $filename);
-		}
-
-		// Get the content of the original image and the handle for the converted file
-		$originalFileContent = $this->storage->getFileContentById($id);
-
-		// Do the actual conversion
+	public function convertImage(
+		int $id,
+		string $filename,
+		string $mode,
+		?int $targetBytes = null,
+		?int $maxLongEdge = null,
+		?int $quality = null,
+		bool $deleteOriginal = true,
+	): JSONResponse {
 		try {
-			$image = new \Imagick();
-			$image->readImageFile($originalFileContent);
-			$image->setImageFormat("jpeg");
-			$image->setImageCompressionQuality($compressionQuality);
-			$blob =  $image->getImageBlob();
-		} catch (\ImagickException $ex) {
-			/**@var \Exception $ex */
-			$this->logger->error("Imagick failed to convert the images: " . $ex->getMessage());
-			return new JSONResponse(["error" => "Imagick failed to convert image " . $filename . ", check if you fulfill all requirements.", "details" => $ex->getMessage()], Http::STATUS_INTERNAL_SERVER_ERROR);
+			$blob = $this->storage->getFileContentById($id);
+			$bytesIn = strlen($blob);
+
+			[$w, $h] = $this->probeDimensions($blob);
+
+			$plan = match ($mode) {
+				'preset' => $this->sizeTargeter->planPreset(
+					$w,
+					$h,
+					$targetBytes ?? self::DEFAULT_TARGET_BYTES,
+				),
+				'custom' => $this->requireCustom($maxLongEdge, $quality, $targetBytes),
+				default => throw new InvalidArgumentException('mode must be preset or custom'),
+			};
+
+			$result = $this->imageConverter->convert($blob, $plan);
+
+			$newBasename = $this->jpegBasename($filename);
+			$this->storage->saveNewImage($id, $newBasename, $result->blob);
+
+			$trashed = false;
+			if ($deleteOriginal) {
+				$trashed = $this->storage->trashOriginal($id);
+			}
+
+			return new JSONResponse([
+				'result' => 'converted',
+				'newFilename' => $newBasename,
+				'bytesIn' => $bytesIn,
+				'bytesOut' => $result->bytesOut,
+				'widthOut' => $result->widthOut,
+				'heightOut' => $result->heightOut,
+				'qualityUsed' => $result->qualityUsed,
+				'originalTrashed' => $trashed,
+			]);
+		} catch (UnsupportedFormatException $e) {
+			return new JSONResponse(
+				['error' => 'Unsupported format', 'details' => $e->getMessage()],
+				Http::STATUS_BAD_REQUEST,
+			);
+		} catch (InvalidArgumentException $e) {
+			return new JSONResponse(
+				['error' => 'Bad request', 'details' => $e->getMessage()],
+				Http::STATUS_BAD_REQUEST,
+			);
+		} catch (Throwable $e) {
+			$this->logger->error('Image conversion failed', ['exception' => $e]);
+			return new JSONResponse(
+				['error' => 'Conversion failed', 'details' => $e->getMessage()],
+				Http::STATUS_INTERNAL_SERVER_ERROR,
+			);
 		}
+	}
 
-		// Save the converted image at the same location as the original one
-		$this->storage->saveNewImage($id, $newFilename, $blob);
+	private function requireCustom(?int $maxLongEdge, ?int $quality, ?int $targetBytes): ConversionPlan {
+		if ($maxLongEdge === null || $quality === null) {
+			throw new InvalidArgumentException('custom mode requires maxLongEdge and quality');
+		}
+		return $this->sizeTargeter->planCustom(
+			$maxLongEdge,
+			$quality,
+			$targetBytes ?? self::DEFAULT_TARGET_BYTES,
+		);
+	}
 
-		return new JSONResponse([
-			"result" => "Image $filename was converted sucessfully!",
-			"newFilename" => $newFilename
-		]);
+	/** @return array{int, int} */
+	private function probeDimensions(string $blob): array {
+		$info = @getimagesizefromstring($blob);
+		if ($info === false) {
+			return [0, 0]; // ImageConverter will reject as unsupported
+		}
+		return [(int)$info[0], (int)$info[1]];
+	}
+
+	private function jpegBasename(string $filename): string {
+		$info = pathinfo($filename);
+		$stem = isset($info['filename']) && $info['filename'] !== '' ? $info['filename'] : 'converted';
+		return $stem . '.jpg';
 	}
 }
