@@ -8,7 +8,11 @@
     "build": "vite --mode production build",
     "dev": "vite --mode development build --sourcemap true --minify false",
     "watch": "vite --mode development build --watch",
-    "check-types": "tsc --noEmit -p tsconfig.json"
+    "check-types": "tsc --noEmit -p tsconfig.json",
+    "lint": "eslint --ext .js,.ts,.vue src/",
+    "lint:fix": "eslint --ext .js,.ts,.vue src/ --fix",
+    "format": "prettier --write 'src/**/*.{js,ts,vue,json}'",
+    "format:check": "prettier --check 'src/**/*.{js,ts,vue,json}'"
   },
   "repository": {
     "type": "git",
@@ -29,7 +33,11 @@
     "@nextcloud/router": "^3.1.0"
   },
   "devDependencies": {
+    "@nextcloud/eslint-config": "^6.1.0",
+    "@nextcloud/prettier-config": "^1.1.0",
     "@nextcloud/vite-config": "^2.5.2",
+    "eslint": "^7.32.0",
+    "prettier": "^3.3.3",
     "vite": "^7.3.1"
   }
 }
