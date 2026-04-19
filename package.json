@@ -30,12 +30,14 @@
     "@nextcloud/dialogs": "^7.3.0",
     "@nextcloud/event-bus": "^3.3.3",
     "@nextcloud/files": "^4.0.0",
-    "@nextcloud/router": "^3.1.0"
+    "@nextcloud/router": "^3.1.0",
+    "vue": "^3.5.32"
   },
   "devDependencies": {
     "@nextcloud/eslint-config": "^6.1.0",
     "@nextcloud/prettier-config": "^1.1.0",
     "@nextcloud/vite-config": "^2.5.2",
+    "@vitejs/plugin-vue": "^5.2.4",
     "eslint": "^7.32.0",
     "prettier": "^3.3.3",
     "vite": "^7.3.1"
