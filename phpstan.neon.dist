@@ -1,0 +1,10 @@
+parameters:
+    level: 6
+    paths:
+        - lib
+        - tests/Unit
+    bootstrapFiles:
+        - tests/unit-bootstrap.php
+    excludePaths:
+        - vendor
+    treatPhpDocTypesAsCertain: false
