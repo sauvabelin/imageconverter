@@ -1,7 +1,7 @@
 {
   "name": "imageconverter",
   "version": "2.0.5",
-  "description": "Just right click your .heif/ .heic image and select \"Convert this image to JPEG\". It converts it to a jpeg file using the same location.",
+  "description": "Right-click an image in Nextcloud Files to convert or resize it.",
   "type": "module",
   "private": true,
   "scripts": {
@@ -28,6 +28,7 @@
     "@nextcloud/router": "^3.1.0"
   },
   "devDependencies": {
+    "@nextcloud/browserslist-config": "^3.0.1",
     "@nextcloud/vite-config": "^2.5.2",
     "vite": "^7.3.1"
   }
