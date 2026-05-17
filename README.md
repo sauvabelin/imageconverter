@@ -1,15 +1,33 @@
-# Usage
-Just right click your .heif/ .heic image and select "Convert this image to JPEG". It converts it to a jpeg file using the same location.
+# Image Converter & Compressor for Nextcloud
 
-# Requirements
-Needs the PHP [Imagick](https://github.com/Imagick/imagick) extension to be installed on your host compiled with support for the HEIC/ HEIF format. Check if your PHP installation supports the HEIC format by entering "php -i" in the terminal and go to the Imagick section.
+Right-click images in the Files app and convert them to JPEG. By default the plugin targets **~1 MB** per output file by resizing and tuning JPEG quality; an **"options"** menu lets you set custom dimensions and quality instead.
 
-[Here](https://medium.com/@eplt/5-minutes-to-install-imagemagick-with-heic-support-on-ubuntu-18-04-digitalocean-fe2d09dcef1) you can find a good tutorial about how to compile Imagemagick with HEIC support and install the PHP extension.
+## Features
 
-The official [Docker Nextcloud image](https://github.com/nextcloud/docker) already includes the Imagick extension with support for the HEIC format.
+- Converts JPEG, PNG, WebP, GIF, BMP, TIFF, HEIC/HEIF, and AVIF sources to JPEG.
+- Preset mode targets ~1 MB using a two-stage resize → quality-tune pipeline.
+- Custom mode: pick your own max long edge and JPEG quality.
+- Optional: move original to trash after successful conversion.
+- Batch-safe: bounded concurrency (4 in-flight requests) keeps the server responsive.
 
-# ToDos
-- Testing
-- Option to choose JPEG quality
-- Option to convert to other formats than JPEG
-- ...
+## Requirements
+
+- Nextcloud 32–34.
+- ImageMagick with delegates for the formats you care about (HEIC, WebP, AVIF as needed).
+- PHP Imagick extension enabled.
+
+See [this tutorial](https://medium.com/@eplt/5-minutes-to-install-imagemagick-with-heic-support-on-ubuntu-18-04-digitalocean-fe2d09dcef1) for installing ImageMagick with HEIC support on Ubuntu. The official [Docker Nextcloud image](https://github.com/nextcloud/docker) already ships the Imagick extension with HEIC support.
+
+## Development
+
+```bash
+composer install
+npm ci
+npm run build
+composer test:unit
+npm run lint
+```
+
+Bug reports: <https://github.com/major-mayer/imageConverter/issues>
+
+License: AGPL-3.0-or-later.

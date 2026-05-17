@@ -1,221 +1,219 @@
 import {
-    ActionContext,
-    ActionContextSingle,
+    type ActionContext,
+    type ActionContextSingle,
     NodeStatus,
     registerFileAction,
 } from '@nextcloud/files'
-
-import {
-    getClient,
-    getDefaultPropfind,
-    resultToNode,
-    getRootPath
-} from '@nextcloud/files/dav'
+import { getClient, getDefaultPropfind, resultToNode, getRootPath } from '@nextcloud/files/dav'
 import { emit } from '@nextcloud/event-bus'
-import type { ResponseDataDetailed, FileStat } from "webdav"
-import { showSuccess, showError } from '@nextcloud/dialogs'
-import { getRequestToken } from '@nextcloud/auth'
+import { showSuccess, showError, spawnDialog } from '@nextcloud/dialogs'
 import '@nextcloud/dialogs/style.css'
-import { generateUrl } from "@nextcloud/router";
-import imageIcon from "@mdi/svg/svg/image-edit-outline.svg?raw";
+import { getRequestToken } from '@nextcloud/auth'
+import { generateUrl } from '@nextcloud/router'
+import type { ResponseDataDetailed, FileStat } from 'webdav'
+import imageIcon from '@mdi/svg/svg/image-edit-outline.svg?raw'
 
-// example for calling the PUT /notes/1 URL
-const baseUrl = generateUrl('/apps/imageconverter');
+import OptionsDialog from './components/OptionsDialog.vue'
+import type { DialogResult } from './components/OptionsDialog.types'
+import { runBounded } from './concurrency'
 
-// Register file actions for a single image
-registerFileAction({
-    id: "convertImage",
-    displayName: () => 'Convert to JPEG',
-    enabled: ({ nodes }) => {
-        for (const file of nodes) {
-            if (file.mime !== "image/heic" && file.mime !== "image/heif") {
-                return false
-            }
-        }
-        return true;
-    },
-    exec: startSingleConversion,
-    iconSvgInline: () => {
-        return imageIcon;
-    },
-    execBatch: startMultiConversion,
-})
+const BASE_URL = generateUrl('/apps/imageconverter')
+const CONCURRENCY = 4
+const DEFAULT_TARGET_BYTES = 1024 * 1024
 
-async function startSingleConversion({ nodes, folder }: ActionContextSingle) {
-    const file = nodes[0];
-    try {
-        console.log("Started converting " + file.path);
-        file.status = NodeStatus.LOADING;
+const SUPPORTED_MIMES = new Set([
+    'image/jpeg',
+    'image/pjpeg',
+    'image/png',
+    'image/webp',
+    'image/gif',
+    'image/bmp',
+    'image/x-ms-bmp',
+    'image/tiff',
+    'image/heic',
+    'image/heif',
+    'image/avif',
+])
 
-        // Add a trailing slash to dir
-        let dirname = folder.dirname;
-        if (!dirname.endsWith("/")) {
-            dirname = dirname + "/"
-        }
+type Payload = {
+    id: number
+    filename: string
+    mode: 'preset' | 'custom'
+    targetBytes: number
+    maxLongEdge?: number
+    quality?: number
+    deleteOriginal: boolean
+}
 
+type SuccessResponse = {
+    result: 'converted'
+    newFilename: string
+    bytesIn: number
+    bytesOut: number
+    widthOut: number
+    heightOut: number
+    qualityUsed: number
+    originalTrashed: boolean
+}
 
-        // Prepare everything for request to backend
-        let data = {
-            filename: file.basename,
-            id: file.id,
-        }
+function allSupported({ nodes }: { nodes: { mime: string | null }[] }): boolean {
+    return nodes.length > 0 && nodes.every((n) => n.mime !== null && SUPPORTED_MIMES.has(n.mime))
+}
 
-        const requestToken = getRequestToken();
-        if (!requestToken) {
-            throw Error("Unable to get a request token!");
-        }
-
-        let response = await fetch(baseUrl + "/convert", {
-            method: "POST",
-            headers: {
-                'Content-Type': 'application/json',
-                "requesttoken": requestToken,
-            },
-            body: JSON.stringify(data)
-        });
-
-        if (!response.ok) {
-            const backendError = await response.text();
-            throw new Error("Backend returned wrong statuscode! Details : " + backendError)
-        }
-
-        let json = await response.json();
-
-        // Emit a files:node:created event for converted image, so they show up in the files app
-        const davClient = getClient();
-        const result = await davClient.stat(getRootPath() + dirname + json.newFilename, { details: true, data: getDefaultPropfind() })
-
-        // FileStat type guard
-        function isResponseDataDetailed(result: FileStat | ResponseDataDetailed<FileStat>): result is ResponseDataDetailed<FileStat> {
-            return (result as ResponseDataDetailed<FileStat>).status !== undefined;
-        }
-
-        if (isResponseDataDetailed(result)) {
-            emit("files:node:created", resultToNode(result.data))
-        }
-        else {
-            throw Error("Dav result is not detailed (missing the 'props' property");
-        }
-
-        showSuccess("Image " + file.path + " has been successfully converted")
-        console.log("ImageConverter: Finished converting: " + json.result);
-        return true;
-
-    }
-    catch (ex) {
-        // handle failure
-        file.status = undefined;
-        showError("An Error occured while converting the image!", { timeout: -1 })
-        console.error("ImageConverter: Error: " + ex);
-        return false;
-    }
-    finally {
-        file.status = undefined;
+function presetSettings(): DialogResult {
+    return {
+        mode: 'preset',
+        targetBytes: DEFAULT_TARGET_BYTES,
+        maxLongEdge: null,
+        quality: null,
+        deleteOriginal: true,
     }
 }
 
+function openOptionsDialog(fileCount: number): Promise<DialogResult | null> {
+    return new Promise((resolve) => {
+        spawnDialog(
+            OptionsDialog,
+            { fileCount },
+            // Event handlers are passed alongside props — casting because
+            // @nextcloud/dialogs typings are loose on this shape.
+            {
+                onSubmit: (value: DialogResult) => resolve(value),
+                onCancel: () => resolve(null),
+            } as unknown as Record<string, unknown>,
+        )
+    })
+}
 
-async function startMultiConversion({ nodes: files, folder }: ActionContext): Promise<(boolean | null)[]> {
-    console.log(`Started conversion of multiple ${files.length} files`);
+function dirnameWithTrailingSlash(folder: { dirname: string }): string {
+    return folder.dirname.endsWith('/') ? folder.dirname : folder.dirname + '/'
+}
 
-    let executionError = false;
+function formatBytes(n: number): string {
+    if (n < 1024) return n + ' B'
+    if (n < 1024 * 1024) return (n / 1024).toFixed(0) + ' KB'
+    if (n < 1024 * 1024 * 1024) return (n / (1024 * 1024)).toFixed(1) + ' MB'
+    return (n / (1024 * 1024 * 1024)).toFixed(2) + ' GB'
+}
 
-    // Add a trailing slash to dir
-    let dirname = folder.dirname;
-    if (!dirname.endsWith("/")) {
-        dirname = dirname + "/"
+async function runConversionBatch(
+    { nodes, folder }: ActionContext,
+    settings: DialogResult,
+): Promise<(boolean | null)[]> {
+    const dirname = dirnameWithTrailingSlash(folder)
+    const token = getRequestToken()
+    if (!token) {
+        showError(t('imageconverter', 'Unable to get a request token'))
+        return nodes.map(() => false)
     }
 
-    // Check for wrong mimetype
-    const returnArray = files.map(file => {
-        if (!(file.mime == "image/heic" || file.mime == "image/heif")) {
-            showError("Selection contains at least one image that is not in the HEIC or HEIF format", { timeout: -1 })
-            executionError = true;
-            return false;
-        }
-        return true;
+    nodes.forEach((n) => {
+        n.status = NodeStatus.LOADING
     })
 
-    if (executionError) {
-        return returnArray
-    }
+    const davClient = getClient()
+    let bytesInTotal = 0
+    let bytesOutTotal = 0
 
-    let requestPromises: Promise<Response>[] = [];
-
-    try {
-        // Generate requests for all images
-        for (let file of files) {
-            // Prepare everything for request to backend
-            let data = {
-                filename: file.basename,
-                id: file.id,
-            }
-
-            const requestToken = getRequestToken();
-            if (!requestToken) {
-                throw Error("Unable to get a request token!");
-            }
-
-            // Create a request promise for each selected file
-            let requestPromise = fetch(baseUrl + "/convert", {
-                method: "POST",
-                headers: {
-                    'Content-Type': 'application/json',
-                    "requesttoken": requestToken,
-                },
-                body: JSON.stringify(data)
-            })
-
-            // Add it to an array to execute them all in parallel
-            requestPromises.push(requestPromise)
+    const outcomes = await runBounded(nodes, CONCURRENCY, async (node) => {
+        const payload: Payload = {
+            id: Number(node.fileid ?? (node as unknown as { id: number }).id),
+            filename: node.basename,
+            mode: settings.mode,
+            targetBytes: settings.targetBytes,
+            deleteOriginal: settings.deleteOriginal,
+            ...(settings.mode === 'custom'
+                ? {
+                      maxLongEdge: settings.maxLongEdge ?? undefined,
+                      quality: settings.quality ?? undefined,
+                  }
+                : {}),
         }
 
-        // Wait for all conversions to be done
-        let responses = await Promise.all(requestPromises);
-
-        // FileStat type guard
-        function isResponseDataDetailed(result: FileStat | ResponseDataDetailed<FileStat>): result is ResponseDataDetailed<FileStat> {
-            return (result as ResponseDataDetailed<FileStat>).status !== undefined;
-        }
-
-        const returnPromises = responses.map(async (response) => {
-            // Check if a statuscode of one of the responses is incorrect 
-            if (!response.ok) {
-                const backendError = await response.text();
-                console.error("Backend returned wrong statuscode! Details : " + backendError)
-                executionError = true;
-                return false
-            }
-
-            const json = await response.json();
-
-            // Emit a files:node:created event for all converted images, so they show up in the files app
-            const davClient = getClient();
-            const result = await davClient.stat(getRootPath() + dirname + json.newFilename, { details: true, data: getDefaultPropfind() })
-
-            if (isResponseDataDetailed(result)) {
-                emit("files:node:created", resultToNode(result.data))
-                return true
-            }
-            else {
-                console.error("Dav result is not detailed (missing the 'props' property");
-                executionError = true;
-                return false;
-            }
+        const response = await fetch(BASE_URL + '/convert', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                requesttoken: token,
+            },
+            body: JSON.stringify(payload),
         })
-
-        const returnArray = await Promise.all(returnPromises)
-        if (executionError) {
-            showError("An error occured while converting the images!", { timeout: -1 });
-            return returnArray;
-        } else {
-            showSuccess("Images have been successfully converted");
-            return returnArray;
+        if (!response.ok) {
+            const text = await response.text()
+            throw new Error(`Backend returned HTTP ${response.status}: ${text}`)
         }
-    } catch (ex) {
-        showError("An error occured while converting the images!", { timeout: -1 });
-        console.error("ImageConverter: Error: " + ex);
-        return returnArray;
+        const json = (await response.json()) as SuccessResponse
+        bytesInTotal += json.bytesIn
+        bytesOutTotal += json.bytesOut
+
+        const stat = await davClient.stat(getRootPath() + dirname + json.newFilename, {
+            details: true,
+            data: getDefaultPropfind(),
+        })
+        if ((stat as ResponseDataDetailed<FileStat>).status !== undefined) {
+            emit('files:node:created', resultToNode((stat as ResponseDataDetailed<FileStat>).data))
+        }
+        if (settings.deleteOriginal && json.originalTrashed) {
+            emit('files:node:deleted', node as never)
+        }
+        return true
+    })
+
+    nodes.forEach((n) => {
+        n.status = undefined
+    })
+
+    const successes = outcomes.filter((o) => o.ok).length
+    const failures = outcomes.length - successes
+
+    if (failures === 0) {
+        const saved = formatBytes(bytesInTotal - bytesOutTotal)
+        showSuccess(t('imageconverter', '{n} converted (saved {saved})', { n: successes, saved }))
+    } else if (successes === 0) {
+        showError(t('imageconverter', 'Conversion failed for all {n} files', { n: failures }))
+    } else {
+        showError(t('imageconverter', '{s} converted, {f} failed', { s: successes, f: failures }))
     }
 
+    outcomes.forEach((o, i) => {
+        if (!o.ok) {
+            console.error(`imageconverter: ${nodes[i].basename} failed:`, o.error)
+        }
+    })
+
+    return outcomes.map((o) => (o.ok ? true : false))
 }
+
+async function runConversionSingle(
+    { nodes, folder }: ActionContextSingle,
+    settings: DialogResult,
+): Promise<boolean | null> {
+    const results = await runConversionBatch({ nodes, folder } as unknown as ActionContext, settings)
+    return results[0] ?? false
+}
+
+registerFileAction({
+    id: 'convertImage',
+    displayName: () => t('imageconverter', 'Convert to JPEG (~1 MB)'),
+    iconSvgInline: () => imageIcon,
+    enabled: allSupported,
+    exec: (ctx) => runConversionSingle(ctx, presetSettings()),
+    execBatch: (ctx) => runConversionBatch(ctx, presetSettings()),
+})
+
+registerFileAction({
+    id: 'convertImageWithOptions',
+    displayName: () => t('imageconverter', 'Convert to JPEG with options…'),
+    iconSvgInline: () => imageIcon,
+    enabled: allSupported,
+    exec: async (ctx) => {
+        const settings = await openOptionsDialog(1)
+        if (!settings) return null
+        return runConversionSingle(ctx, settings)
+    },
+    execBatch: async (ctx) => {
+        const settings = await openOptionsDialog(ctx.nodes.length)
+        if (!settings) return ctx.nodes.map(() => null)
+        return runConversionBatch(ctx, settings)
+    },
+})
