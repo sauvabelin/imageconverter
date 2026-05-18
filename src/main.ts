@@ -6,7 +6,8 @@ import {
 } from '@nextcloud/files'
 import { getClient, getDefaultPropfind, resultToNode, getRootPath } from '@nextcloud/files/dav'
 import { emit } from '@nextcloud/event-bus'
-import { showSuccess, showError, spawnDialog } from '@nextcloud/dialogs'
+import { showSuccess, showError } from '@nextcloud/dialogs'
+import { createApp, h } from 'vue'
 import '@nextcloud/dialogs/style.css'
 import { getRequestToken } from '@nextcloud/auth'
 import { generateUrl } from '@nextcloud/router'
@@ -72,16 +73,25 @@ function presetSettings(): DialogResult {
 
 function openOptionsDialog(fileCount: number): Promise<DialogResult | null> {
     return new Promise((resolve) => {
-        spawnDialog(
-            OptionsDialog,
-            { fileCount },
-            // Event handlers are passed alongside props — casting because
-            // @nextcloud/dialogs typings are loose on this shape.
-            {
-                onSubmit: (value: DialogResult) => resolve(value),
-                onCancel: () => resolve(null),
-            } as unknown as Record<string, unknown>,
-        )
+        const host = document.createElement('div')
+        document.body.appendChild(host)
+        let settled = false
+        const finish = (value: DialogResult | null) => {
+            if (settled) return
+            settled = true
+            app.unmount()
+            host.remove()
+            resolve(value)
+        }
+        const app = createApp({
+            render: () =>
+                h(OptionsDialog, {
+                    fileCount,
+                    onSubmit: (value: DialogResult) => finish(value),
+                    onCancel: () => finish(null),
+                }),
+        })
+        app.mount(host)
     })
 }
 
