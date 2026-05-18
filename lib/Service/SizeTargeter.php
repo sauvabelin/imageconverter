@@ -7,8 +7,9 @@ namespace OCA\ImageConverter\Service;
 use InvalidArgumentException;
 
 final class SizeTargeter {
-	private const INITIAL_QUALITY = 85;
-	private const FALLBACK_QUALITY = 78;
+	private const INITIAL_QUALITY = 90;
+	private const FALLBACK_QUALITY = 85;
+	private const TARGET_MEGAPIXELS = 12;
 
 	public function planPreset(int $width, int $height, int $targetBytes): ConversionPlan {
 		if ($width <= 0 || $height <= 0) {
@@ -18,18 +19,17 @@ final class SizeTargeter {
 			throw new InvalidArgumentException('targetBytes must be positive');
 		}
 
+		$sourceMP = ($width * $height) / 1_000_000;
 		$longEdge = max($width, $height);
-		$megapixels = ($width * $height) / 1_000_000;
 
-		$bucketLongEdge = match (true) {
-			$megapixels > 12 => 2560,
-			$megapixels > 6 => 2048,
-			$megapixels > 2 => 1600,
-			default => null,
-		};
-
-		// Skip resize if the source is already smaller than the bucket target.
-		$maxLongEdge = ($bucketLongEdge !== null && $longEdge > $bucketLongEdge) ? $bucketLongEdge : null;
+		// Scale toward 12 MP, preserving aspect ratio. Sources already at or
+		// below 12 MP are kept untouched (maxLongEdge=null tells the converter
+		// to skip the resize stage).
+		$maxLongEdge = null;
+		if ($sourceMP > self::TARGET_MEGAPIXELS) {
+			$scale = sqrt(self::TARGET_MEGAPIXELS / $sourceMP);
+			$maxLongEdge = (int)round($longEdge * $scale);
+		}
 
 		return new ConversionPlan(
 			maxLongEdge: $maxLongEdge,
