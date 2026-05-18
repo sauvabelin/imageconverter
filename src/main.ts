@@ -83,7 +83,13 @@ function openOptionsDialog(fileCount: number): Promise<DialogResult | null> {
         const dlg = document.createElement('dialog')
         dlg.className = 'imageconverter-options-dialog'
         // Inline styles so we don't depend on the stylesheet being loaded.
+        // NC's global stylesheet overrides the browser's default centering for
+        // <dialog>, so we set position explicitly. inset:0 + margin:auto is the
+        // robust way to center a modal dialog regardless of intrinsic size.
         dlg.style.cssText = [
+            'position: fixed',
+            'inset: 0',
+            'margin: auto',
             'border: none',
             'border-radius: 8px',
             'padding: 0',
@@ -92,6 +98,9 @@ function openOptionsDialog(fileCount: number): Promise<DialogResult | null> {
             'box-shadow: 0 8px 32px rgba(0,0,0,0.4)',
             'min-width: 360px',
             'max-width: 90vw',
+            'max-height: 90vh',
+            'width: fit-content',
+            'height: fit-content',
         ].join(';')
         dlg.innerHTML = `
             <form method="dialog" style="display:flex;flex-direction:column;gap:12px;padding:16px;">
