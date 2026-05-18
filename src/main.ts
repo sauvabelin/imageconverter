@@ -5,7 +5,12 @@ import {
     registerFileAction,
 } from '@nextcloud/files'
 import type { View } from '@nextcloud/files'
-import { getClient, getDefaultPropfind, getRootPath } from '@nextcloud/files/dav'
+import {
+    davGetClient,
+    davGetDefaultPropfind,
+    davGetRootPath,
+    davResultToNode,
+} from '@nextcloud/files'
 import { emit } from '@nextcloud/event-bus'
 import { showSuccess, showError } from '@nextcloud/dialogs'
 import { createApp, h } from 'vue'
@@ -122,7 +127,7 @@ async function runConversionBatch(
         n.status = NodeStatus.LOADING
     })
 
-    const davClient = getClient()
+    const davClient = davGetClient()
     let bytesInTotal = 0
     let bytesOutTotal = 0
 
@@ -158,13 +163,14 @@ async function runConversionBatch(
         bytesInTotal += json.bytesIn
         bytesOutTotal += json.bytesOut
 
-        // Refresh the converted file in the Files app. v3 has no resultToNode
-        // helper; emit raw event with the dav stat and let listeners handle it.
-        await davClient.stat(getRootPath() + dirname + json.newFilename, {
+        // Make the newly-written file appear in the Files list without a reload.
+        // davResultToNode turns the WebDAV propfind result into a Node instance
+        // that the Files app's pinia store accepts via files:node:created.
+        const stat = (await davClient.stat(davGetRootPath() + dirname + json.newFilename, {
             details: true,
-            data: getDefaultPropfind(),
-        })
-        emit('files:node:updated', node)
+            data: davGetDefaultPropfind(),
+        })) as { data: unknown }
+        emit('files:node:created', davResultToNode(stat.data))
         if (settings.deleteOriginal && json.originalTrashed) {
             emit('files:node:deleted', node)
         }

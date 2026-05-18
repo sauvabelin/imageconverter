@@ -41,7 +41,22 @@ final class ImageConverter {
 			} else {
 				$image->autoOrient();
 			}
+
+			// Preserve the ICC colour profile across the strip so wide-gamut
+			// sources (Display P3 from iPhones, Adobe RGB) don't get rendered
+			// as washed-out sRGB. stripImage() removes ALL profiles, which is
+			// what we want for EXIF/XMP bloat — but the colour profile carries
+			// the rendering intent and must be re-attached.
+			$iccProfile = null;
+			try {
+				$iccProfile = $image->getImageProfile('icc');
+			} catch (ImagickException) {
+				// No ICC profile attached — nothing to preserve.
+			}
 			$image->stripImage();
+			if ($iccProfile !== null) {
+				$image->profileImage('icc', $iccProfile);
+			}
 
 			// Stage 1 — resize.
 			if ($plan->maxLongEdge !== null) {

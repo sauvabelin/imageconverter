@@ -108,13 +108,30 @@ final class ConvertController extends Controller {
 		);
 	}
 
-	/** @return array{int, int} */
+	/**
+	 * @return array{int, int}
+	 *
+	 * getimagesizefromstring() doesn't recognize HEIC/HEIF/AVIF — for those
+	 * formats it returns false and we'd end up with [0, 0], which trips
+	 * SizeTargeter's positivity check. Fall back to Imagick (which we already
+	 * depend on for the actual conversion) when GD-style probing fails.
+	 */
 	private function probeDimensions(string $blob): array {
 		$info = @getimagesizefromstring($blob);
-		if ($info === false) {
+		if ($info !== false) {
+			return [(int)$info[0], (int)$info[1]];
+		}
+		try {
+			$probe = new \Imagick();
+			try {
+				$probe->pingImageBlob($blob);
+				return [(int)$probe->getImageWidth(), (int)$probe->getImageHeight()];
+			} finally {
+				$probe->clear();
+			}
+		} catch (\Throwable) {
 			return [0, 0]; // ImageConverter will reject as unsupported
 		}
-		return [(int)$info[0], (int)$info[1]];
 	}
 
 	private function jpegBasename(string $filename): string {
