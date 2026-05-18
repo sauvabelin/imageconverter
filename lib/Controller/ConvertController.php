@@ -20,6 +20,9 @@ use Throwable;
 
 final class ConvertController extends Controller {
 	private const DEFAULT_TARGET_BYTES = 1_048_576;
+	// Preset mode skips already-small files. 1.5x target avoids re-encoding
+	// photos that would gain nothing from another pass through the JPEG quantizer.
+	private const PRESET_SKIP_RATIO = 1.5;
 
 	public function __construct(
 		string $appName,
@@ -45,6 +48,21 @@ final class ConvertController extends Controller {
 		try {
 			$blob = $this->storage->getFileContentById($id);
 			$bytesIn = strlen($blob);
+
+			$effectiveTarget = $targetBytes ?? self::DEFAULT_TARGET_BYTES;
+			if ($mode === 'preset' && $bytesIn < (int)($effectiveTarget * self::PRESET_SKIP_RATIO)) {
+				return new JSONResponse([
+					'result' => 'skipped',
+					'reason' => 'already-small',
+					'newFilename' => $filename,
+					'bytesIn' => $bytesIn,
+					'bytesOut' => $bytesIn,
+					'widthOut' => 0,
+					'heightOut' => 0,
+					'qualityUsed' => 0,
+					'originalTrashed' => false,
+				]);
+			}
 
 			[$w, $h] = $this->probeDimensions($blob);
 

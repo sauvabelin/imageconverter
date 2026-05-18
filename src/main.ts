@@ -13,13 +13,14 @@ import {
 } from '@nextcloud/files'
 import { emit } from '@nextcloud/event-bus'
 import { showSuccess, showError } from '@nextcloud/dialogs'
-import { createApp, h } from 'vue'
+// (No Vue runtime needed — we render the options modal with vanilla DOM
+//  via the browser's native <dialog> element, which avoids z-index, focus
+//  trap, backdrop, and ESC-handling pitfalls of a hand-rolled overlay.)
 import '@nextcloud/dialogs/style.css'
 import { getRequestToken } from '@nextcloud/auth'
 import { generateUrl } from '@nextcloud/router'
 import imageIcon from '@mdi/svg/svg/image-edit-outline.svg?raw'
 
-import OptionsDialog from './components/OptionsDialog.vue'
 import type { DialogResult } from './components/OptionsDialog.types'
 import { runBounded } from './concurrency'
 
@@ -51,8 +52,9 @@ type Payload = {
     deleteOriginal: boolean
 }
 
-type SuccessResponse = {
-    result: 'converted'
+type BackendResponse = {
+    result: 'converted' | 'skipped'
+    reason?: string
     newFilename: string
     bytesIn: number
     bytesOut: number
@@ -78,25 +80,101 @@ function presetSettings(): DialogResult {
 
 function openOptionsDialog(fileCount: number): Promise<DialogResult | null> {
     return new Promise((resolve) => {
-        const host = document.createElement('div')
-        document.body.appendChild(host)
+        const dlg = document.createElement('dialog')
+        dlg.className = 'imageconverter-options-dialog'
+        // Inline styles so we don't depend on the stylesheet being loaded.
+        dlg.style.cssText = [
+            'border: none',
+            'border-radius: 8px',
+            'padding: 0',
+            'background: var(--color-main-background, #fff)',
+            'color: var(--color-main-text, #222)',
+            'box-shadow: 0 8px 32px rgba(0,0,0,0.4)',
+            'min-width: 360px',
+            'max-width: 90vw',
+        ].join(';')
+        dlg.innerHTML = `
+            <form method="dialog" style="display:flex;flex-direction:column;gap:12px;padding:16px;">
+                <h2 style="margin:0 0 4px;font-size:1.1rem;">${t('imageconverter', 'Convert images')}</h2>
+                <fieldset style="border:none;padding:0;margin:0;display:flex;flex-direction:column;gap:6px;">
+                    <legend style="font-weight:bold;padding:0;">${t('imageconverter', 'Conversion mode')}</legend>
+                    <label><input type="radio" name="mode" value="preset" checked> ${t('imageconverter', 'Target size')}</label>
+                    <label><input type="radio" name="mode" value="custom"> ${t('imageconverter', 'Custom settings')}</label>
+                </fieldset>
+                <label data-field="preset" style="display:flex;flex-direction:column;gap:4px;">
+                    <span>${t('imageconverter', 'Target size (KB)')}</span>
+                    <input type="number" name="targetKb" value="1024" min="1">
+                </label>
+                <label data-field="custom" style="display:none;flex-direction:column;gap:4px;">
+                    <span>${t('imageconverter', 'Max long edge (px)')}</span>
+                    <input type="number" name="maxLongEdge" value="2048" min="16" max="10000">
+                </label>
+                <label data-field="custom" style="display:none;flex-direction:column;gap:4px;">
+                    <span>${t('imageconverter', 'Quality')}: <output name="qualityOut">82</output></span>
+                    <input type="range" name="quality" value="82" min="1" max="100">
+                </label>
+                <label style="display:flex;align-items:center;gap:8px;">
+                    <input type="checkbox" name="deleteOriginal" checked>
+                    ${t('imageconverter', 'Move original to trash on success')}
+                </label>
+                <p style="opacity:0.8;font-size:0.9em;margin:0;">${t('imageconverter', 'Applies to {n} selected file(s)', { n: fileCount })}</p>
+                <div style="display:flex;justify-content:flex-end;gap:8px;">
+                    <button type="button" data-action="cancel" class="button">${t('imageconverter', 'Cancel')}</button>
+                    <button type="submit" data-action="submit" class="button primary">${t('imageconverter', 'Convert')}</button>
+                </div>
+            </form>
+        `
+
+        document.body.appendChild(dlg)
+
+        const form = dlg.querySelector('form')!
+        const qualityInput = form.querySelector<HTMLInputElement>('input[name="quality"]')!
+        const qualityOut = form.querySelector<HTMLOutputElement>('output[name="qualityOut"]')!
+        qualityInput.addEventListener('input', () => {
+            qualityOut.value = qualityInput.value
+        })
+
+        const presetFields = form.querySelectorAll<HTMLElement>('[data-field="preset"]')
+        const customFields = form.querySelectorAll<HTMLElement>('[data-field="custom"]')
+        form.querySelectorAll<HTMLInputElement>('input[name="mode"]').forEach((radio) => {
+            radio.addEventListener('change', () => {
+                const isPreset = (form.elements.namedItem('mode') as RadioNodeList).value === 'preset'
+                presetFields.forEach((el) => (el.style.display = isPreset ? 'flex' : 'none'))
+                customFields.forEach((el) => (el.style.display = isPreset ? 'none' : 'flex'))
+            })
+        })
+
         let settled = false
         const finish = (value: DialogResult | null) => {
             if (settled) return
             settled = true
-            app.unmount()
-            host.remove()
+            dlg.close()
+            dlg.remove()
             resolve(value)
         }
-        const app = createApp({
-            render: () =>
-                h(OptionsDialog, {
-                    fileCount,
-                    onSubmit: (value: DialogResult) => finish(value),
-                    onCancel: () => finish(null),
-                }),
+
+        form.querySelector<HTMLButtonElement>('[data-action="cancel"]')!.addEventListener('click', () => {
+            finish(null)
         })
-        app.mount(host)
+        dlg.addEventListener('cancel', (e) => {
+            e.preventDefault()
+            finish(null)
+        })
+        form.addEventListener('submit', (e) => {
+            e.preventDefault()
+            const data = new FormData(form)
+            const mode = String(data.get('mode')) as 'preset' | 'custom'
+            const targetKb = Number(data.get('targetKb') || 1024)
+            finish({
+                mode,
+                targetBytes: targetKb * 1024,
+                maxLongEdge: mode === 'custom' ? Number(data.get('maxLongEdge')) : null,
+                quality: mode === 'custom' ? Number(data.get('quality')) : null,
+                deleteOriginal: data.get('deleteOriginal') !== null,
+            })
+        })
+
+        dlg.showModal()
     })
 }
 
@@ -159,9 +237,13 @@ async function runConversionBatch(
             const text = await response.text()
             throw new Error(`Backend returned HTTP ${response.status}: ${text}`)
         }
-        const json = (await response.json()) as SuccessResponse
+        const json = (await response.json()) as BackendResponse
         bytesInTotal += json.bytesIn
         bytesOutTotal += json.bytesOut
+
+        if (json.result === 'skipped') {
+            return 'skipped'
+        }
 
         // Make the newly-written file appear in the Files list without a reload.
         // davResultToNode turns the WebDAV propfind result into a Node instance
@@ -181,16 +263,31 @@ async function runConversionBatch(
         n.status = undefined
     })
 
-    const successes = outcomes.filter((o) => o.ok).length
-    const failures = outcomes.length - successes
+    const converted = outcomes.filter((o) => o.ok && o.value === true).length
+    const skipped = outcomes.filter((o) => o.ok && o.value === 'skipped').length
+    const failures = outcomes.filter((o) => !o.ok).length
+    const saved = formatBytes(bytesInTotal - bytesOutTotal)
 
-    if (failures === 0) {
-        const saved = formatBytes(bytesInTotal - bytesOutTotal)
-        showSuccess(t('imageconverter', '{n} converted (saved {saved})', { n: successes, saved }))
-    } else if (successes === 0) {
+    if (failures === 0 && skipped === 0) {
+        showSuccess(t('imageconverter', '{n} converted (saved {saved})', { n: converted, saved }))
+    } else if (failures === 0) {
+        showSuccess(
+            t('imageconverter', '{c} converted, {s} skipped (already small) — saved {saved}', {
+                c: converted,
+                s: skipped,
+                saved,
+            }),
+        )
+    } else if (converted === 0 && skipped === 0) {
         showError(t('imageconverter', 'Conversion failed for all {n} files', { n: failures }))
     } else {
-        showError(t('imageconverter', '{s} converted, {f} failed', { s: successes, f: failures }))
+        showError(
+            t('imageconverter', '{c} converted, {s} skipped, {f} failed', {
+                c: converted,
+                s: skipped,
+                f: failures,
+            }),
+        )
     }
 
     outcomes.forEach((o, i) => {
