@@ -104,7 +104,7 @@ function openOptionsDialog(fileCount: number): Promise<DialogResult | null> {
         ].join(';')
         dlg.innerHTML = `
             <form method="dialog" style="display:flex;flex-direction:column;gap:12px;padding:16px;">
-                <h2 style="margin:0 0 4px;font-size:1.1rem;">${t('imageconverter', 'Convert images')}</h2>
+                <h2 style="margin:0 0 4px;font-size:1.1rem;">${t('imageconverter', 'Resize images')}</h2>
                 <fieldset style="border:none;padding:0;margin:0;display:flex;flex-direction:column;gap:6px;">
                     <legend style="font-weight:bold;padding:0;">${t('imageconverter', 'Conversion mode')}</legend>
                     <label><input type="radio" name="mode" value="preset" checked> ${t('imageconverter', 'Target size')}</label>
@@ -129,7 +129,7 @@ function openOptionsDialog(fileCount: number): Promise<DialogResult | null> {
                 <p style="opacity:0.8;font-size:0.9em;margin:0;">${t('imageconverter', 'Applies to {n} selected file(s)', { n: fileCount })}</p>
                 <div style="display:flex;justify-content:flex-end;gap:8px;">
                     <button type="button" data-action="cancel" class="button">${t('imageconverter', 'Cancel')}</button>
-                    <button type="submit" data-action="submit" class="button primary">${t('imageconverter', 'Convert')}</button>
+                    <button type="submit" data-action="submit" class="button primary">${t('imageconverter', 'Resize')}</button>
                 </div>
             </form>
         `
@@ -311,7 +311,7 @@ async function runConversionBatch(
 registerFileAction(
     new FileAction({
         id: 'convertImage',
-        displayName: () => t('imageconverter', 'Convert to JPEG (~1 MB)'),
+        displayName: () => t('imageconverter', 'Resize (~1 MB)'),
         iconSvgInline: () => imageIcon,
         enabled: (nodes: Node[], _view: View) => allSupported(nodes),
         async exec(file: Node, _view: View, dir: string) {
@@ -327,7 +327,7 @@ registerFileAction(
 registerFileAction(
     new FileAction({
         id: 'convertImageWithOptions',
-        displayName: () => t('imageconverter', 'Convert to JPEG with options…'),
+        displayName: () => t('imageconverter', 'Resize with options…'),
         iconSvgInline: () => imageIcon,
         enabled: (nodes: Node[], _view: View) => allSupported(nodes),
         async exec(file: Node, _view: View, dir: string) {
