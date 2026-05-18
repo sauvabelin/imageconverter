@@ -80,7 +80,7 @@ final class ImageConverter {
 
 			if (
 				$plan->fallbackQuality !== null
-				&& strlen($blobOut) > (int)ceil($plan->targetBytes * 1.1)
+				&& strlen($blobOut) > (int)ceil($plan->targetBytes * 1.5)
 			) {
 				$blobOut = $this->encode($image, $plan->fallbackQuality);
 				$qualityUsed = $plan->fallbackQuality;
