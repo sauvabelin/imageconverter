@@ -137,6 +137,10 @@ final class ConvertController extends Controller {
 	private function jpegBasename(string $filename): string {
 		$info = pathinfo($filename);
 		$stem = isset($info['filename']) && $info['filename'] !== '' ? $info['filename'] : 'converted';
+		// Avoid double-tagging if the user converts an already-resized file.
+		if (!str_ends_with($stem, '_resized')) {
+			$stem .= '_resized';
+		}
 		return $stem . '.jpg';
 	}
 }
