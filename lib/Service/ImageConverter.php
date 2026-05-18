@@ -34,7 +34,13 @@ final class ImageConverter {
 			$this->assertSupported($image);
 
 			// Stage 0 — normalize.
-			$image->autoOrientImage();
+			// Imagick::autoOrientImage() only exists with ImageMagick 7 + Imagick >=3.7;
+			// PHP-Imagick 3.8 on Debian still uses the older Imagick::autoOrient() name.
+			if (method_exists($image, 'autoOrientImage')) {
+				$image->autoOrientImage();
+			} else {
+				$image->autoOrient();
+			}
 			$image->stripImage();
 
 			// Stage 1 — resize.
