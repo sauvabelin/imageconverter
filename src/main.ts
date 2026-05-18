@@ -1,17 +1,17 @@
 import {
-    type ActionContext,
-    type ActionContextSingle,
+    FileAction,
+    Node,
     NodeStatus,
     registerFileAction,
 } from '@nextcloud/files'
-import { getClient, getDefaultPropfind, resultToNode, getRootPath } from '@nextcloud/files/dav'
+import type { View } from '@nextcloud/files'
+import { getClient, getDefaultPropfind, getRootPath } from '@nextcloud/files/dav'
 import { emit } from '@nextcloud/event-bus'
 import { showSuccess, showError } from '@nextcloud/dialogs'
 import { createApp, h } from 'vue'
 import '@nextcloud/dialogs/style.css'
 import { getRequestToken } from '@nextcloud/auth'
 import { generateUrl } from '@nextcloud/router'
-import type { ResponseDataDetailed, FileStat } from 'webdav'
 import imageIcon from '@mdi/svg/svg/image-edit-outline.svg?raw'
 
 import OptionsDialog from './components/OptionsDialog.vue'
@@ -57,8 +57,8 @@ type SuccessResponse = {
     originalTrashed: boolean
 }
 
-function allSupported({ nodes }: { nodes: { mime: string | null }[] }): boolean {
-    return nodes.length > 0 && nodes.every((n) => n.mime !== null && SUPPORTED_MIMES.has(n.mime))
+function allSupported(nodes: Node[]): boolean {
+    return nodes.length > 0 && nodes.every((n) => !!n.mime && SUPPORTED_MIMES.has(n.mime))
 }
 
 function presetSettings(): DialogResult {
@@ -95,8 +95,8 @@ function openOptionsDialog(fileCount: number): Promise<DialogResult | null> {
     })
 }
 
-function dirnameWithTrailingSlash(folder: { dirname: string }): string {
-    return folder.dirname.endsWith('/') ? folder.dirname : folder.dirname + '/'
+function dirnameWithTrailingSlash(dir: string): string {
+    return dir.endsWith('/') ? dir : dir + '/'
 }
 
 function formatBytes(n: number): string {
@@ -107,10 +107,11 @@ function formatBytes(n: number): string {
 }
 
 async function runConversionBatch(
-    { nodes, folder }: ActionContext,
+    nodes: Node[],
+    dir: string,
     settings: DialogResult,
 ): Promise<(boolean | null)[]> {
-    const dirname = dirnameWithTrailingSlash(folder)
+    const dirname = dirnameWithTrailingSlash(dir)
     const token = getRequestToken()
     if (!token) {
         showError(t('imageconverter', 'Unable to get a request token'))
@@ -126,8 +127,9 @@ async function runConversionBatch(
     let bytesOutTotal = 0
 
     const outcomes = await runBounded(nodes, CONCURRENCY, async (node) => {
+        const fileId = Number(node.fileid ?? (node as unknown as { id: number }).id)
         const payload: Payload = {
-            id: Number(node.fileid ?? (node as unknown as { id: number }).id),
+            id: fileId,
             filename: node.basename,
             mode: settings.mode,
             targetBytes: settings.targetBytes,
@@ -156,15 +158,15 @@ async function runConversionBatch(
         bytesInTotal += json.bytesIn
         bytesOutTotal += json.bytesOut
 
-        const stat = await davClient.stat(getRootPath() + dirname + json.newFilename, {
+        // Refresh the converted file in the Files app. v3 has no resultToNode
+        // helper; emit raw event with the dav stat and let listeners handle it.
+        await davClient.stat(getRootPath() + dirname + json.newFilename, {
             details: true,
             data: getDefaultPropfind(),
         })
-        if ((stat as ResponseDataDetailed<FileStat>).status !== undefined) {
-            emit('files:node:created', resultToNode((stat as ResponseDataDetailed<FileStat>).data))
-        }
+        emit('files:node:updated', node)
         if (settings.deleteOriginal && json.originalTrashed) {
-            emit('files:node:deleted', node as never)
+            emit('files:node:deleted', node)
         }
         return true
     })
@@ -194,36 +196,38 @@ async function runConversionBatch(
     return outcomes.map((o) => (o.ok ? true : false))
 }
 
-async function runConversionSingle(
-    { nodes, folder }: ActionContextSingle,
-    settings: DialogResult,
-): Promise<boolean | null> {
-    const results = await runConversionBatch({ nodes, folder } as unknown as ActionContext, settings)
-    return results[0] ?? false
-}
+registerFileAction(
+    new FileAction({
+        id: 'convertImage',
+        displayName: () => t('imageconverter', 'Convert to JPEG (~1 MB)'),
+        iconSvgInline: () => imageIcon,
+        enabled: (nodes: Node[], _view: View) => allSupported(nodes),
+        async exec(file: Node, _view: View, dir: string) {
+            const results = await runConversionBatch([file], dir, presetSettings())
+            return results[0] ?? false
+        },
+        async execBatch(files: Node[], _view: View, dir: string) {
+            return runConversionBatch(files, dir, presetSettings())
+        },
+    }),
+)
 
-registerFileAction({
-    id: 'convertImage',
-    displayName: () => t('imageconverter', 'Convert to JPEG (~1 MB)'),
-    iconSvgInline: () => imageIcon,
-    enabled: allSupported,
-    exec: (ctx) => runConversionSingle(ctx, presetSettings()),
-    execBatch: (ctx) => runConversionBatch(ctx, presetSettings()),
-})
-
-registerFileAction({
-    id: 'convertImageWithOptions',
-    displayName: () => t('imageconverter', 'Convert to JPEG with options…'),
-    iconSvgInline: () => imageIcon,
-    enabled: allSupported,
-    exec: async (ctx) => {
-        const settings = await openOptionsDialog(1)
-        if (!settings) return null
-        return runConversionSingle(ctx, settings)
-    },
-    execBatch: async (ctx) => {
-        const settings = await openOptionsDialog(ctx.nodes.length)
-        if (!settings) return ctx.nodes.map(() => null)
-        return runConversionBatch(ctx, settings)
-    },
-})
+registerFileAction(
+    new FileAction({
+        id: 'convertImageWithOptions',
+        displayName: () => t('imageconverter', 'Convert to JPEG with options…'),
+        iconSvgInline: () => imageIcon,
+        enabled: (nodes: Node[], _view: View) => allSupported(nodes),
+        async exec(file: Node, _view: View, dir: string) {
+            const settings = await openOptionsDialog(1)
+            if (!settings) return null
+            const results = await runConversionBatch([file], dir, settings)
+            return results[0] ?? false
+        },
+        async execBatch(files: Node[], _view: View, dir: string) {
+            const settings = await openOptionsDialog(files.length)
+            if (!settings) return files.map(() => null)
+            return runConversionBatch(files, dir, settings)
+        },
+    }),
+)
